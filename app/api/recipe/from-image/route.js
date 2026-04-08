@@ -1,0 +1,54 @@
+import { NextResponse } from "next/server";
+import { callGeminiWithRotation } from "../../../lib/gemini";
+
+export async function POST(request) {
+  try {
+    const formData = await request.formData();
+    const file = formData.get("file");
+
+    if (!file) {
+      return NextResponse.json({ error: "No image provided" }, { status: 400 });
+    }
+
+    const arrayBuffer = await file.arrayBuffer();
+    const base64Image = Buffer.from(arrayBuffer).toString("base64");
+    const mimeType = file.type || "image/jpeg";
+
+    const prompt = `Look at this food image and give me a recipe for what you see. Reply ONLY with JSON in this exact format:
+{"title":"Name","ingredients":["amount item",...],"instructions":["Step 1",...]}`;
+
+    const geminiData = await callGeminiWithRotation({
+      contents: [
+        {
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType, data: base64Image } },
+          ],
+        },
+      ],
+      generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
+    });
+
+    const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const cleaned = rawText.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
+
+    let recipe;
+    try {
+      recipe = JSON.parse(cleaned);
+    } catch {
+      console.error("Failed to parse Gemini response:", rawText);
+      return NextResponse.json(
+        { error: "Failed to parse recipe from AI response" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json(recipe);
+  } catch (error) {
+    console.error("Route error:", error.message);
+    return NextResponse.json(
+      { error: error.message || "Internal server error" },
+      { status: error.message?.includes("quota") ? 429 : 500 }
+    );
+  }
+}
