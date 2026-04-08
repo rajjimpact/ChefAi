@@ -2,57 +2,32 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import Link from "next/link";
-import {
-  analyzeImageColor,
-  getRecipeByColor,
-  getRecipeByIngredients,
-} from "../lib/dummyRecipes";
 
-// Internal Next.js API routes (powered by Gemini)
 const API_BASE = "/api/recipe";
 
-/** Call internal Gemini-powered API route for image-based recipe */
 async function fetchFromImageAPI(file) {
   const formData = new FormData();
   formData.append("file", file);
   const response = await fetch(`${API_BASE}/from-image`, {
     method: "POST",
     body: formData,
-    signal: AbortSignal.timeout(30000), // Gemini may take up to 30s
+    signal: AbortSignal.timeout(30000),
   });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error || "API error");
-  }
-  return response.json();
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Failed to generate recipe");
+  return data;
 }
 
-/** Call internal Gemini-powered API route for text-based recipe */
 async function fetchFromTextAPI(ingredientsList) {
   const response = await fetch(`${API_BASE}/from-text`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ingredients: ingredientsList }),
-    signal: AbortSignal.timeout(30000), // Gemini may take up to 30s
+    signal: AbortSignal.timeout(30000),
   });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error || "API error");
-  }
-  return response.json();
-}
-
-/** Fallback: Analyse image colours, then return a matching dummy recipe */
-async function demoGenerateFromImage(file, imageDataUrl) {
-  await new Promise((r) => setTimeout(r, 1600)); // simulate processing
-  const color = await analyzeImageColor(imageDataUrl);
-  const recipe = getRecipeByColor(color);
-  return recipe;
-}
-
-async function demoGenerateFromText(ingredientsArr) {
-  await new Promise((r) => setTimeout(r, 1200)); // simulate processing
-  return getRecipeByIngredients(ingredientsArr);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Failed to generate recipe");
+  return data;
 }
 
 const ANALYSIS_MESSAGES = [
@@ -63,8 +38,8 @@ const ANALYSIS_MESSAGES = [
 
 const TEXT_ANALYSIS_MESSAGES = [
   "🧠 Analysing ingredients...",
-  "📖 Searching recipe database...",
-  "✨ Preparing your recipe...",
+  "✨ Asking Gemini AI...",
+  "🍽️ Preparing your recipe...",
 ];
 
 export default function AiChef() {
@@ -79,7 +54,7 @@ export default function AiChef() {
   const [recipe, setRecipe] = useState(null);
   const [recipeKey, setRecipeKey] = useState(0);
   const [statusMsg, setStatusMsg] = useState("");
-  const [isDemoMode, setIsDemoMode] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
   const imageInputRef = useRef(null);
   const recipeResultRef = useRef(null);
@@ -102,6 +77,7 @@ export default function AiChef() {
   const switchTab = (tab) => {
     setActiveTab(tab);
     setRecipe(null);
+    setErrorMsg("");
     setStatusMsg("");
   };
 
@@ -111,6 +87,8 @@ export default function AiChef() {
       return;
     }
     setCurrentFile(file);
+    setRecipe(null);
+    setErrorMsg("");
     const reader = new FileReader();
     reader.onload = (e) => setPreviewSrc(e.target.result);
     reader.readAsDataURL(file);
@@ -122,7 +100,6 @@ export default function AiChef() {
     if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
   };
 
-  /** Rotate through status messages during loading */
   const runStatusMessages = (messages, intervalMs = 900) => {
     let i = 0;
     setStatusMsg(messages[0]);
@@ -137,22 +114,14 @@ export default function AiChef() {
     if (!currentFile || !previewSrc) return;
     setImageLoading(true);
     setRecipe(null);
+    setErrorMsg("");
     const clearStatus = runStatusMessages(ANALYSIS_MESSAGES);
-
     try {
-      let data;
-      try {
-        data = await fetchFromImageAPI(currentFile);
-        setIsDemoMode(false);
-      } catch {
-        // Fall back to client-side demo analysis
-        data = await demoGenerateFromImage(currentFile, previewSrc);
-        setIsDemoMode(true);
-      }
+      const data = await fetchFromImageAPI(currentFile);
       setRecipe(data);
       setRecipeKey((k) => k + 1);
     } catch (error) {
-      alert("Something went wrong: " + error.message);
+      setErrorMsg(error.message);
     } finally {
       clearStatus();
       setStatusMsg("");
@@ -169,21 +138,14 @@ export default function AiChef() {
     const ingredientsArr = textStr.split(",").map((i) => i.trim()).filter((i) => i);
     setTextLoading(true);
     setRecipe(null);
+    setErrorMsg("");
     const clearStatus = runStatusMessages(TEXT_ANALYSIS_MESSAGES);
-
     try {
-      let data;
-      try {
-        data = await fetchFromTextAPI(ingredientsArr);
-        setIsDemoMode(false);
-      } catch {
-        data = await demoGenerateFromText(ingredientsArr);
-        setIsDemoMode(true);
-      }
+      const data = await fetchFromTextAPI(ingredientsArr);
       setRecipe(data);
       setRecipeKey((k) => k + 1);
     } catch (error) {
-      alert("Something went wrong: " + error.message);
+      setErrorMsg(error.message);
     } finally {
       clearStatus();
       setStatusMsg("");
@@ -196,8 +158,6 @@ export default function AiChef() {
       recipeResultRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }, [recipe, recipeKey]);
-
-  const isLoading = imageLoading || textLoading;
 
   return (
     <>
@@ -285,7 +245,6 @@ export default function AiChef() {
               )}
             </div>
 
-            {/* Analysis status overlay */}
             {imageLoading && statusMsg && (
               <div className="status-banner">{statusMsg}</div>
             )}
@@ -327,6 +286,20 @@ export default function AiChef() {
           </div>
         </section>
 
+        {/* ── Error Card ── */}
+        {errorMsg && (
+          <section className="error-card glass-panel">
+            <div className="error-icon">⚠️</div>
+            <div className="error-body">
+              <h3>Could not generate recipe</h3>
+              <p>{errorMsg}</p>
+              <button className="error-retry-btn" onClick={() => setErrorMsg("")}>
+                Dismiss
+              </button>
+            </div>
+          </section>
+        )}
+
         {/* ── Recipe Result ── */}
         {recipe && (
           <section
@@ -334,11 +307,6 @@ export default function AiChef() {
             ref={recipeResultRef}
             className="recipe-result glass-panel"
           >
-            {isDemoMode && (
-              <div className="demo-badge">
-                🧪 Demo Mode — Add your Gemini API key in <code>.env.local</code> for real AI results
-              </div>
-            )}
             <div className="result-header">
               <h2 className="recipe-title-shimmer">✨ {recipe.title} ✨</h2>
             </div>
